@@ -1,0 +1,115 @@
+Application
+
+object Application {
+
+    @JvmStatic
+    fun main(args: Array<String>) {
+        Micronaut.build()
+                .packages("com.sd.laborator")
+                .mainClass(Application.javaClass)
+                .start()
+    }
+}
+
+
+
+EratosteneFunction
+
+package com.sd.laborator;
+
+import io.micronaut.function.FunctionBean
+import io.micronaut.function.executor.FunctionInitializer
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
+import java.util.function.Function
+import javax.inject.Inject
+
+@FunctionBean("eratostene")
+class EratosteneFunction : FunctionInitializer(), Function<EratosteneRequest, EratosteneResponse> {
+    @Inject
+    private lateinit var eratosteneSieveService: EratosteneSieveService
+
+    private val LOG: Logger = LoggerFactory.getLogger(EratosteneFunction::class.java)
+
+    override fun apply(msg : EratosteneRequest) : EratosteneResponse {
+        // preluare numar din parametrul de intrare al functiei
+        val number = msg.getNumber()
+
+        val response = EratosteneResponse()
+
+        // se verifica daca numarul nu depaseste maximul
+        val a = eratosteneSieveService.randomList(number)
+        val b = eratosteneSieveService.randomList(number)
+        val c = eratosteneSieveService.listC(a, b)
+
+        response.setReunion(c)
+
+
+        LOG.info("Calcul incheiat!")
+
+        return response
+    }
+}
+
+/**
+ * This main method allows running the function as a CLI application using: echo '{}' | java -jar function.jar
+ * where the argument to echo is the JSON to be parsed.
+ */
+fun main(args : Array<String>) {
+    val function = EratosteneFunction()
+    function.run(args, { context -> function.apply(context.get(EratosteneRequest::class.java))})
+}
+
+
+EratosteneRequest
+
+import io.micronaut.core.annotation.Introspected
+
+@Introspected
+class EratosteneRequest {
+    private lateinit var number: Integer
+
+    fun getNumber(): Int {
+        return number.toInt()
+    }
+}
+
+
+EratosteneResponse
+
+@Introspected
+class EratosteneResponse {
+    private var reunion: Set<Int>? = null
+    fun getReunion(): Set<Int>? {
+        return reunion
+    }
+
+    fun setReunion(reunion: Set<Int>?) {
+        this.reunion = reunion
+    }
+}
+
+
+EratosteneSieveService
+
+import java.util.*
+import javax.inject.Singleton
+import kotlin.random.Random.Default.nextInt
+
+@Singleton
+class EratosteneSieveService {
+    //multimea C ( reuniunea dintre A si B)
+    fun listC(A: List<Int>, B:List<Int>) : Set<Int>{
+        return A.union(B)
+    }
+
+    //multime de 100 elemente generata random
+    fun randomList(maxNumber: Int) : List<Int>{
+        val rezultat = mutableListOf<Int>()
+
+        for(i in 1 until 101){
+            rezultat.add(nextInt(0,maxNumber))
+        }
+        return rezultat
+    }
+}
