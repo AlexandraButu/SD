@@ -1,0 +1,23 @@
+from pyspark import SparkConf, SparkContext
+
+# Configurarea Spark
+conf = SparkConf().setAppName("EbookWordCount")
+sc = SparkContext(conf=conf)
+
+# Citirea fișierului text de tip ebook
+lines = sc.textFile("calea_catre_fisierul_ebook.txt")
+
+# Transformarea liniilor în cuvinte și filtrarea entităților semantice de legătură
+words = lines.flatMap(lambda line: line.split(" "))            .filter(lambda word: len(word) > 3)            .filter(lambda word: not word.startswith("http"))            .filter(lambda word: not word.startswith("www"))
+
+# Calcularea numărului de apariții ale fiecărui cuvânt
+word_counts = words.map(lambda word: (word.lower(), 1))                   .reduceByKey(lambda a, b: a + b)
+
+# Sortarea cuvintelor după numărul de apariții în ordine descrescătoare
+sorted_word_counts = word_counts.sortBy(lambda x: x[1], ascending=False)
+
+# Salvarea rezultatelor într-un fișier
+sorted_word_counts.saveAsTextFile("calea_catre_fisierul_de_iesire.txt")
+
+# Oprirea contextului Spark
+sc.stop()
