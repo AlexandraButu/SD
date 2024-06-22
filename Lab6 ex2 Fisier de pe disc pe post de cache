@@ -1,0 +1,702 @@
+Controller
+
+package com.sd.laborator.controllers
+
+import org.springframework.amqp.rabbit.connection.CachingConnectionFactory
+import org.springframework.amqp.rabbit.connection.ConnectionFactory
+import org.springframework.amqp.rabbit.core.RabbitTemplate
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.context.annotation.Bean
+import org.springframework.stereotype.Controller
+
+@Controller
+class RabbitMqController {
+    @Value("\${spring.rabbitmq.host}")
+    private lateinit var host: String
+    @Value("\${spring.rabbitmq.port}")
+    private val port: Int = 0
+    @Value("\${spring.rabbitmq.username}")
+    private lateinit var username: String
+    @Value("\${spring.rabbitmq.password}")
+    private lateinit var password: String
+    @Value("\${libraryapp.rabbitmq.exchange}")
+    private lateinit var exchange: String
+    @Value("\${libraryapp.rabbitmq.routingkey}")
+    private lateinit var routingKey: String
+
+    fun getExchange(): String = this.exchange
+
+    fun getRoutingKey(): String = this.routingKey
+
+    fun setExchange(exchange:String)
+    {
+        this.exchange = exchange
+    }
+
+    fun setRoutingKey(routingKey:String){
+        this.routingKey=routingKey
+    }
+
+
+    @Bean
+    private fun connectionFactory(): ConnectionFactory {
+        val connectionFactory = CachingConnectionFactory()
+        connectionFactory.host = this.host
+        connectionFactory.username = this.username
+        connectionFactory.setPassword(this.password)
+        connectionFactory.port = this.port
+        return connectionFactory
+    }
+
+    @Bean
+    fun rabbitTemplate(): RabbitTemplate = RabbitTemplate(connectionFactory())
+}
+
+
+
+
+interfaces
+
+
+
+import com.sd.laborator.model.Book
+import com.sd.laborator.model.Cache
+
+interface CacheDAO {
+    fun getCache(): Set<Cache?>
+    fun addCache(cache:Cache)
+    fun findByQuery(query: String): Set<Cache?>
+}
+interface HTMLPrinter {
+    fun printHTML(books: Set<Book>): String
+}
+
+interface JSONPrinter {
+    fun printJSON(books: Set<Book>): String
+}
+
+
+interface LibraryDAO {
+
+    fun createBookTable()
+    fun deleteBookTable()
+    fun initializeBookTable()
+    fun addBook(book: Book)
+
+    fun getBooks(): Set<Book?>
+    fun findAllByAuthor(author: String): Set<Book?>
+    fun findAllByTitle(title: String): Set<Book?>
+    fun findAllByPublisher(publisher: String): Set<Book?>
+}
+interface LibraryPrinter: HTMLPrinter, JSONPrinter, RawPrinter
+
+
+interface RawPrinter {
+    fun printRaw(books: Set<Book>): String
+}
+
+
+
+
+microservices
+
+package com.sd.laborator.microservices
+
+import com.sd.laborator.controllers.RabbitMqController
+import com.sd.laborator.interfaces.CacheDAO
+import com.sd.laborator.interfaces.LibraryDAO
+import com.sd.laborator.model.Cache
+import org.springframework.amqp.core.AmqpTemplate
+import org.springframework.amqp.rabbit.annotation.RabbitListener
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.stereotype.Controller
+
+@Controller
+class CachingMicroservice {
+    @Autowired
+    private lateinit var cachingDAO: CacheDAO
+    @Autowired
+    private lateinit var rabbitMqController: RabbitMqController
+    @Autowired
+    private lateinit var amqpTemplate: AmqpTemplate
+
+    @RabbitListener(queues = ["\${libraryapp.rabbitmq.queue1}"])
+    fun fetchMessage(message: String) {
+        val processed_msg = message.split("_")
+        println("cache")
+        val ts = System.currentTimeMillis() / 60000
+        val result: String? = when(processed_msg[0]) {
+
+            "print" -> {
+                processed_msg[1]
+                val result=cachingDAO.findByQuery(message)
+                if(result.isEmpty())
+                {
+                    "not exists_"+message
+                }
+                else
+                {
+                    if(ts-(result.elementAt(0)?.cacheTimestamp!!)<=60)
+                    {
+                        "exists_"+ (result.elementAt(0)?.cacheResult ?: "")
+                    }
+                    else
+                    {
+                        "not exists_"+message
+                    }
+                }
+            }
+            "find-and-print" -> {
+                val format=processed_msg[1]
+                var result=cachingDAO.findByQuery(message)
+                if(result.isEmpty())
+                {
+                    "not exists_"+message
+                }
+                else
+                {
+                    if(ts-(result.elementAt(0)?.cacheTimestamp!!)<=60)
+                    {
+                        "exists_"+ (result.elementAt(0)?.cacheResult ?: "")
+                    }
+                    else
+                    {
+                        "not exists_"+message
+                    }
+                }
+            }
+            "add"->{
+                if(processed_msg[1] == "print") {
+                    val querry = processed_msg[1] + "_" + processed_msg[2]
+                    val content = processed_msg[3]
+                    cachingDAO.addCache(Cache(ts.toInt(), querry, content))
+                    null
+                } else {
+                    val querry = processed_msg[1] + "_" + processed_msg[2] + "_" + processed_msg[3]
+                    val content = processed_msg[4]
+                    cachingDAO.addCache(Cache(ts.toInt(), querry, content))
+                    null
+                }
+            }
+            else -> null
+
+        }
+        println("result: ")
+        println(result)
+        if (result != null) sendMessage(result)
+    }
+
+    fun sendMessage(message: String) {
+        println("message: ")
+        println(message)
+        rabbitMqController.setRoutingKey("libraryapp.routingkey")
+        this.amqpTemplate.convertAndSend(rabbitMqController.getExchange(),
+            rabbitMqController.getRoutingKey(),
+            message)
+    }
+
+}
+
+package com.sd.laborator.microservices
+
+import com.sd.laborator.controllers.RabbitMqController
+import com.sd.laborator.interfaces.LibraryDAO
+import com.sd.laborator.interfaces.LibraryPrinter
+import com.sd.laborator.model.Book
+import com.sd.laborator.model.Cache
+import com.sd.laborator.model.Content
+import org.springframework.amqp.core.AmqpTemplate
+import org.springframework.amqp.rabbit.annotation.RabbitListener
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.stereotype.Controller
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestMethod
+import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.ResponseBody
+import java.lang.Thread.sleep
+import java.util.*
+
+@Controller
+class LibraryPrinterMicroservice {
+    @Autowired
+    private lateinit var libraryDAO: LibraryDAO
+
+    @Autowired
+    private lateinit var libraryPrinter: LibraryPrinter
+    @Autowired
+    private lateinit var rabbitMqController: RabbitMqController
+    @Autowired
+    private lateinit var amqpTemplate: AmqpTemplate
+    private var queue: Queue<String> = LinkedList<String>()
+    @RabbitListener(queues = ["\${libraryapp.rabbitmq.queue}"])
+    fun fetchMessage(message: String) {
+        var processed_message=message.split('_')
+        print(message)
+        when(processed_message[0]) {
+            "exists" -> {
+                queue.add(processed_message[1])
+            }
+            "not exists","exists+badtimestamp" -> {
+                //val querry=processed_message[1].split('_')
+                val operatie=processed_message[1]
+                val format=processed_message[2]
+                if(operatie=="print")
+                {
+
+                    if(format=="json")
+                    {
+                        val data = libraryPrinter.printJSON(libraryDAO.getBooks() as Set<Book>)
+                        sendMessage("add_"+operatie+"_"+format+"_"+data)
+                        queue.add(data)
+
+                    }
+                    else if(format=="html")
+                    {
+                        val data = libraryPrinter.printHTML(libraryDAO.getBooks() as Set<Book>)
+                        sendMessage("add_"+operatie+"_"+format+"_"+data)
+                        queue.add(data)
+                    }
+                    else
+                    {
+                        val data = libraryPrinter.printRaw(libraryDAO.getBooks() as Set<Book>)
+                        sendMessage("add_"+operatie+"_"+format+"_"+data)
+                        queue.add(data)
+                    }
+                }
+                else
+                {
+                    val filter=processed_message[3].split('=')
+                    if(format=="json")
+                    {
+
+                        if(filter[0]=="author") {
+                            var data = libraryPrinter.printJSON(libraryDAO.findAllByAuthor(filter[1]) as Set<Book>)
+                            sendMessage("add_"+operatie+"_"+format+"_"+filter[0]+"="+filter[1]+"_"+data)
+                            queue.add(data)
+                        }
+                        else if(filter[0]=="title")
+                        {
+                            var data = libraryPrinter.printJSON(libraryDAO.findAllByTitle(filter[1]) as Set<Book>)
+                            sendMessage("add_"+operatie+"_"+format+"_"+filter[0]+"="+filter[1]+"_"+data)
+                            queue.add(data)
+                        }
+                        else
+                        {
+                            var data = libraryPrinter.printJSON(libraryDAO.findAllByPublisher(filter[1]) as Set<Book>)
+                            sendMessage("add_"+operatie+"_"+format+"_"+filter[0]+"="+filter[1]+"_"+data)
+                            queue.add(data)
+                        }
+
+                    }
+                    else if(format=="html")
+                    {
+                        if(filter[0]=="author") {
+                            var data = libraryPrinter.printHTML(libraryDAO.findAllByAuthor(filter[1]) as Set<Book>)
+                            sendMessage("add_"+operatie+"_"+format+"_"+filter[0]+"="+filter[1]+"_"+data)
+                            queue.add(data)
+                        }
+                        else if(filter[0]=="title")
+                        {
+                            var data = libraryPrinter.printHTML(libraryDAO.findAllByTitle(filter[1]) as Set<Book>)
+                            sendMessage("add_"+operatie+"_"+format+"_"+filter[0]+"="+filter[1]+"_"+data)
+                            queue.add(data)
+                        }
+                        else
+                        {
+                            var data = libraryPrinter.printHTML(libraryDAO.findAllByPublisher(filter[1]) as Set<Book>)
+                            sendMessage("add_"+operatie+"_"+format+"_"+filter[0]+"="+filter[1]+"_"+data)
+                            queue.add(data)
+                        }
+                    }
+                    else
+                    {
+                        if(filter[0]=="author") {
+                            var data = libraryPrinter.printRaw(libraryDAO.findAllByAuthor(filter[1]) as Set<Book>)
+                            sendMessage("add_"+operatie+"_"+format+"_"+filter[0]+"="+filter[1]+"_"+data)
+                            queue.add(data)
+                        }
+                        else if(filter[0]=="title")
+                        {
+                            var data = libraryPrinter.printRaw(libraryDAO.findAllByTitle(filter[1]) as Set<Book>)
+                            sendMessage("add_"+operatie+"_"+format+"_"+filter[0]+"="+filter[1]+"_"+data)
+                            queue.add(data)
+                        }
+                        else
+                        {
+                            var data = libraryPrinter.printRaw(libraryDAO.findAllByPublisher(filter[1]) as Set<Book>)
+                            sendMessage("add_"+operatie+"_"+format+"_"+filter[0]+"="+filter[1]+"_"+data)
+                            queue.add(data)
+                        }
+                    }
+                }
+
+            }
+        }
+    }
+
+    fun sendMessage(message: String) {
+        println("message: ")
+        println(message)
+        println()
+        rabbitMqController.setRoutingKey("libraryapp.routingkey1")
+        this.amqpTemplate.convertAndSend(rabbitMqController.getExchange(),
+            rabbitMqController.getRoutingKey(),
+            message)
+    }
+
+    @RequestMapping("/print", method = [RequestMethod.GET])
+    @ResponseBody
+    fun customPrint(@RequestParam(required = true, name = "format", defaultValue = "") format: String): String {
+        sendMessage("print_"+format)
+        val thread = Thread {
+                while(queue.isEmpty()) {
+                    sleep(100)
+                }
+        }
+        thread.start()
+        thread.join()
+        var data = queue.elementAt(0)
+        queue.clear()
+        return data
+
+    }
+    @RequestMapping("/find-and-print", method = [RequestMethod.GET])
+    @ResponseBody
+    fun customFind(@RequestParam(required = false, name = "author", defaultValue = "") author: String,
+                   @RequestParam(required = false, name = "title", defaultValue = "") title: String,
+                   @RequestParam(required = false, name = "publisher", defaultValue = "") publisher: String,
+                   @RequestParam(required = true, name = "format", defaultValue = "") format: String): String {
+        if (author != "") {
+            sendMessage("find-and-print_"+format+"_author="+author)
+            val thread = Thread {
+                while(queue.isEmpty()) {
+                    sleep(100)
+                }
+            }
+            thread.start()
+            thread.join()
+            var data = queue.elementAt(0)
+            queue.clear()
+            return data
+
+        }
+        else if (title != "") {
+            sendMessage("find-and-print_"+format+"_title="+title)
+            val thread = Thread {
+                while(queue.isEmpty()) {
+                    sleep(100)
+                }
+            }
+            thread.start()
+            thread.join()
+            var data = queue.elementAt(0)
+            queue.clear()
+            return data
+        }
+        else if (publisher != "") {
+            sendMessage("find-and-print_"+format+"_publisher="+publisher)
+            val thread = Thread {
+                while(queue.isEmpty()) {
+                    sleep(100)
+                }
+            }
+            thread.start()
+            thread.join()
+            var data = queue.elementAt(0)
+            queue.clear()
+            return data
+        }
+        else {
+            return "Not a valid field"
+        }
+    }
+}
+
+
+
+model
+
+
+class Book(private var data: Content) {
+
+    var id: Int
+        get() {
+            return id
+        }
+        set(value) {
+            id = value
+        }
+    var name: String?
+        get() {
+            return data.name
+        }
+        set(value) {
+            data.name = value
+        }
+
+    var author: String?
+        get() {
+            return data.author
+        }
+        set(value) {
+            data.author = value
+        }
+
+    var publisher: String?
+        get() {
+            return data.publisher
+        }
+        set(value) {
+            data.publisher = value
+        }
+
+    var content: String?
+        get() {
+            return data.text
+        }
+        set(value) {
+            data.text = value
+        }
+
+    fun hasAuthor(author: String): Boolean {
+        return data.author.equals(author)
+    }
+
+    fun hasTitle(title: String): Boolean {
+        return data.name.equals(title)
+    }
+
+    fun publishedBy(publisher: String): Boolean {
+        return data.publisher.equals(publisher)
+    }
+}
+
+class Cache(private var timestamp:Int,private var query:String,private var result:String) {
+    var cacheTimestamp: Int
+        get() {
+            return timestamp
+        }
+        set(value) {
+            timestamp = value
+        }
+    var cacheQuery: String
+        get() {
+            return query
+        }
+        set(value) {
+            query = value
+        }
+    var cacheResult: String
+        get() {
+            return result
+        }
+        set(value) {
+            result = value
+        }
+}
+
+data class Content(var id:Int,var author: String?, var text: String?, var name: String?, var publisher: String?)
+
+
+services
+
+package com.sd.laborator.services
+
+import com.sd.laborator.interfaces.CacheDAO
+import com.sd.laborator.model.Book
+import com.sd.laborator.model.Cache
+import com.sd.laborator.model.Content
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.core.RowMapper
+import org.springframework.stereotype.Service
+import java.io.File
+import java.sql.ResultSet
+import java.sql.SQLException
+import java.util.regex.Pattern
+
+class CacheRowMapper : RowMapper<Cache?> {
+    @Throws(SQLException::class)
+    override fun mapRow(rs: ResultSet, rowNum: Int): Cache {
+        return Cache(rs.getInt("timestamp"), rs.getString("query"),rs.getString("result"))
+    }
+}
+@Service
+class CacheDAOService: CacheDAO {
+    @Autowired
+    private lateinit var jdbcTemplate: JdbcTemplate
+    var pattern: Pattern = Pattern.compile("\\W")
+
+
+    override fun getCache(): Set<Cache?> {
+        val result: MutableList<Cache?> = jdbcTemplate.query("SELECT * FROM caches", CacheRowMapper())
+        return result.toSet()
+
+    }
+
+
+
+    override fun addCache(cache: Cache) {
+        /*if(pattern.matcher(book.name).find()) {
+            println("SQL Injection for book name")
+            return
+        }*/
+        File("/home/adi/modele/ex 9/ex1-tema/LibraryApp/cache.txt").appendText(cache.cacheTimestamp.toString()+"+"+cache.cacheQuery+"+"+cache.cacheResult);
+    }
+
+    override fun findByQuery(query: String): Set<Cache?>{
+        var result:MutableList<Cache> = mutableListOf()
+        var text=File("/home/adi/modele/ex 9/ex1-tema/LibraryApp/cache.txt").readText()
+        var caches=text.split("]")
+        for (cache in caches) {
+            if(cache.length==3) {
+
+                if (cache.split("+")[1] == query) {
+                    result.add(Cache(cache.split("+")[0].toInt(), cache.split("+")[1], cache.split("+")[2]))
+                    break;
+                }
+            }
+        }
+        return result.toSet()
+    }
+}
+
+package com.sd.laborator.services
+
+import com.sd.laborator.interfaces.LibraryDAO
+import com.sd.laborator.model.Book
+import com.sd.laborator.model.Content
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.core.RowMapper
+import org.springframework.stereotype.Service
+import java.sql.ResultSet
+import java.sql.SQLException
+import java.util.regex.Pattern
+
+class BookRowMapper : RowMapper<Book?> {
+    @Throws(SQLException::class)
+    override fun mapRow(rs: ResultSet, rowNum: Int): Book {
+        return Book(Content(rs.getInt("id"), rs.getString("author"), rs.getString("text"),rs.getString("title"),rs.getString("publisher")))
+    }
+}
+
+@Service
+class LibraryDAOService: LibraryDAO {
+    @Autowired
+    private lateinit var jdbcTemplate: JdbcTemplate
+    var pattern: Pattern = Pattern.compile("\\W")
+
+    override fun createBookTable() {
+        jdbcTemplate.execute("""CREATE TABLE IF NOT EXISTS books(
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                        author VARCHAR(100),
+                                        title VARCHAR(100),
+                                        publisher VARCHAR(100),
+                                        text TEXT,
+                                        CONSTRAINT constrangere UNIQUE (author,title,publisher,text))""")
+        /*addBook(Book(Content(1,"Roberto Ierusalimschy","Preface. When Waldemar, Luiz, and I started the development of Lua, back in 1993, we could hardly imagine that it would spread as it did. ...","Programming in LUA","Teora")))
+        addBook(Book(Content(2,"Jules Verne","Nemaipomeniti sunt francezii astia! - Vorbiti, domnule, va ascult! ....","Steaua Sudului","Corint")))
+        addBook(Book(Content(3,"Jules Verne","Cuvant Inainte. Imaginatia copiilor - zicea un mare poet romantic spaniol - este asemenea unui cal nazdravan, iar curiozitatea lor e pintenul ce-l fugareste prin lumea celor mai indraznete proiecte.","O calatorie spre centrul pamantului","Polirom")))
+        addBook(Book(Content(4,"Jules Verne","Partea intai. Naufragiatii vazduhului. Capitolul 1. Uraganul din 1865. ...","Insula Misterioasa","Teora")))
+        addBook(Book(Content(5,"Jules Verne","Capitolul I. S-a pus un premiu pe capul unui om. Se ofera premiu de 2000 de lire ...","Casa cu aburi","Albatros")))
+        */
+    }
+    override fun deleteBookTable()
+    {
+        jdbcTemplate.execute("""DROP TABLE books""")
+    }
+    override fun initializeBookTable()
+    {
+        addBook(Book(Content(1,"Roberto Ierusalimschy","Preface. When Waldemar, Luiz, and I started the development of Lua, back in 1993, we could hardly imagine that it would spread as it did. ...","Programming in LUA","Teora")))
+        addBook(Book(Content(2,"Jules Verne","Nemaipomeniti sunt francezii astia! - Vorbiti, domnule, va ascult! ....","Steaua Sudului","Corint")))
+        addBook(Book(Content(3,"Jules Verne","Cuvant Inainte. Imaginatia copiilor - zicea un mare poet romantic spaniol - este asemenea unui cal nazdravan, iar curiozitatea lor e pintenul ce-l fugareste prin lumea celor mai indraznete proiecte.","O calatorie spre centrul pamantului","Polirom")))
+        addBook(Book(Content(4,"Jules Verne","Partea intai. Naufragiatii vazduhului. Capitolul 1. Uraganul din 1865. ...","Insula Misterioasa","Teora")))
+        addBook(Book(Content(5,"Jules Verne","Capitolul I. S-a pus un premiu pe capul unui om. Se ofera premiu de 2000 de lire ...","Casa cu aburi","Albatros")))
+    }
+    override fun getBooks(): Set<Book?> {
+        val result: MutableList<Book?> = jdbcTemplate.query("SELECT * FROM books", BookRowMapper())
+        return result.toSet()
+
+    }
+
+
+
+    override fun addBook(book: Book) {
+        /*if(pattern.matcher(book.name).find()) {
+            println("SQL Injection for book name")
+            return
+        }*/
+        jdbcTemplate.update("INSERT INTO books(author,text,title,publisher ) VALUES (?, ?,?,?)", book.author, book.content,book.name,book.publisher)
+    }
+
+    override fun findAllByAuthor(author: String): Set<Book?> {
+        val result: MutableList<Book?> = jdbcTemplate.query("SELECT * FROM books WHERE author = '$author'", BookRowMapper())
+        return result.toSet()
+    }
+
+    override fun findAllByTitle(title: String): Set<Book?> {
+
+        val result: MutableList<Book?> = jdbcTemplate.query("SELECT * FROM books WHERE title = '$title'", BookRowMapper())
+        return result.toSet()
+    }
+
+    override fun findAllByPublisher(publisher: String): Set<Book?> {
+        val result: MutableList<Book?> = jdbcTemplate.query("SELECT * FROM books WHERE publisher = '$publisher'", BookRowMapper())
+        return result.toSet()
+    }
+}
+
+package com.sd.laborator.services
+
+import com.sd.laborator.interfaces.LibraryPrinter
+import com.sd.laborator.model.Book
+import org.springframework.stereotype.Service
+
+@Service
+class LibraryPrinterService: LibraryPrinter {
+    override fun printHTML(books: Set<Book>): String {
+        var content: String = "<html><head><title>Libraria mea HTML</title></head><body>"
+        books.forEach {
+            content += "<p><h3>${it.name}</h3><h4>${it.author}</h4><h5>${it.publisher}</h5>${it.content}</p><br/>"
+        }
+        content += "</body></html>"
+        return content
+    }
+
+    override fun printJSON(books: Set<Book>): String {
+        var content: String = "[\n"
+        books.forEach {
+            if (it != books.last())
+                content += "    {\"Titlu\": \"${it.name}\", \"Autor\":\"${it.author}\", \"Editura\":\"${it.publisher}\", \"Text\":\"${it.content}\"},\n"
+            else
+                content += "    {\"Titlu\": \"${it.name}\", \"Autor\":\"${it.author}\", \"Editura\":\"${it.publisher}\", \"Text\":\"${it.content}\"}\n"
+        }
+        content += "]\n"
+        return content
+    }
+
+    override fun printRaw(books: Set<Book>): String {
+        var content: String = ""
+        books.forEach {
+            content += "${it.name}\n${it.author}\n${it.publisher}\n${it.content}\n\n"
+        }
+        return content
+    }
+}
+
+
+
+
+LibraryApp
+
+import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.boot.runApplication
+
+
+@SpringBootApplication
+open class LibraryApp
+
+fun main(args: Array<String>) {
+    runApplication<LibraryApp>(*args)
+}
