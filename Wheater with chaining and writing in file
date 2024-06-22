@@ -1,0 +1,233 @@
+Wheater with chaining controllers
+
+
+package com.sd.laborator.controllers
+import com.sd.laborator.pojo.WeatherForecastData
+import com.sd.laborator.services.*
+import org.springframework.stereotype.Controller
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestMethod
+import org.springframework.web.bind.annotation.ResponseBody
+
+@Controller
+class WeatherAppController {
+    private var weatherForecastService: WeatherForecastService = WeatherForecastService_ID(TimeService())
+    init {
+        this.weatherForecastService.setNext(WeatherForecastService_Location(TimeService(), DataLoggerService()))
+    }
+
+    @RequestMapping("/getforecast/{location}", method = [RequestMethod.GET])
+    @ResponseBody
+    fun getForecast(@PathVariable location: String): String {
+        val rawForecastData: WeatherForecastData? = weatherForecastService.getForecastData(location)
+        return rawForecastData?.toString() ?: "Nu s-a putut gasi nici un oras"
+    }}```
+
+
+interfaces
+
+package com.sd.laborator.interfaces
+
+interface DataLoggerInterface {
+    fun saveData(whaterForecastData: String)
+}
+interface LocationSearchInterface {
+    fun getLocationId(locationName: String): Int
+}
+interface TimeInterface {
+    fun getCurrentTime():String
+}
+interface WeatherForecastInterface {
+    fun getForecastData(location: Any): WeatherForecastData?
+}```
+
+
+
+
+pojo
+
+package com.sd.laborator.pojo
+
+data class WeatherForecastData (
+    var location: String,
+    var date: String,
+    var weatherState: String,
+    var weatherStateIconURL: String,
+    var windDirection: String,
+    var windSpeed: Int, // km/h
+    var minTemp: Int, // grade celsius
+    var maxTemp: Int,
+    var currentTemp: Int,
+    var humidity: Int // procent
+)
+{
+    override fun toString(): String {
+        return "WeatherForecastData(location='$location', date='$date', weatherState='$weatherState', weatherStateIconURL='$weatherStateIconURL', windDirection='$windDirection', windSpeed=$windSpeed, minTemp=$minTemp, maxTemp=$maxTemp, currentTemp=$currentTemp, humidity=$humidity) \n\n"
+    }
+}```
+
+
+
+
+services
+
+import com.sd.laborator.interfaces.DataLoggerInterface
+import java.io.File
+
+class DataLoggerService: DataLoggerInterface {
+    override fun saveData(whaterForecastData: String) {
+        File("file.txt").appendText(whaterForecastData)
+    }
+}
+
+import com.sd.laborator.interfaces.LocationSearchInterface
+import org.springframework.stereotype.Service
+import java.net.URL
+import org.json.JSONObject
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+
+@Service
+class LocationSearchService : LocationSearchInterface {
+    override fun getLocationId(locationName: String): Int {
+        // codificare parametru URL (deoarece poate conţine caracterespeciale)
+        val encodedLocationName = URLEncoder.encode(locationName,StandardCharsets.UTF_8.toString())
+        // construire obiect de tip URL
+        val locationSearchURL = URL("https://www.metaweather.com/api/location/search/?query=$encodedLocationName")
+        // preluare raspuns HTTP (se face cerere GET şi se preiaconţinutul răspunsului sub formă de text)
+        val rawResponse: String = locationSearchURL.readText()
+        // parsare obiect JSON
+        val responseRootObject = JSONObject("{\"data\": ${rawResponse}}")
+        val responseContentObject =
+            responseRootObject.getJSONArray("data").takeUnless { it.isEmpty }?.getJSONObject(0)
+        return responseContentObject?.getInt("woeid") ?: -1
+    }
+}
+
+import com.sd.laborator.interfaces.TimeInterface
+import org.springframework.stereotype.Service
+import java.text.SimpleDateFormat
+import java.util.*
+@Service
+class TimeService : TimeInterface {
+    override fun getCurrentTime():String {
+        val formatter = SimpleDateFormat("dd/MM/yyyy HH:mm:ss")
+        return formatter.format(Date())
+    }
+}
+
+import com.sd.laborator.interfaces.TimeInterface
+import com.sd.laborator.interfaces.WeatherForecastInterface
+import org.springframework.stereotype.Service
+@Service
+abstract class WeatherForecastService (protected val timeService: TimeInterface) : WeatherForecastInterface
+{
+    protected var wfsNext : WeatherForecastService? = null
+
+    fun setNext(next : WeatherForecastService) {
+        var latest = this
+        while (latest.wfsNext != null){
+            latest = latest.wfsNext!!
+        }
+        latest.wfsNext = next
+    }
+}
+
+import com.sd.laborator.interfaces.TimeInterface
+import com.sd.laborator.pojo.WeatherForecastData
+import org.json.JSONObject
+import java.net.URL
+import kotlin.math.roundToInt
+
+class WeatherForecastService_ID(timeService: TimeInterface) : WeatherForecastService(timeService) {
+    override fun getForecastData(location: Any): WeatherForecastData? {
+        var locationId : Int
+        try{
+            if (location !is String){
+                return if (this.wfsNext != null) this.wfsNext!!.getForecastData(location) else null
+            }
+            locationId = location.toInt()
+        } catch (nfe: NumberFormatException){
+            return if (this.wfsNext != null) this.wfsNext!!.getForecastData(location) else null
+        }
+        var forecastDataURL : URL
+        var rawResponse: String
+        try {
+            forecastDataURL = URL("https://www.metaweather.com/api/location/$locationId/")
+            // preluare conţinut răspuns HTTP la o cerere GET către URL-ul de mai sus
+            rawResponse = forecastDataURL.readText()
+        } catch(e :java.io.FileNotFoundException){
+            return null
+        }
+
+        val responseRootObject = JSONObject(rawResponse)
+        val weatherDataObject = responseRootObject.getJSONArray("consolidated_weather").getJSONObject(0)
+        return WeatherForecastData(
+            location = responseRootObject.getString("title"),
+            date = timeService.getCurrentTime(),
+            weatherState = weatherDataObject.getString("weather_state_name"),
+            weatherStateIconURL = "https://www.metaweather.com/static/img/weather/png/${weatherDataObject.getString("weather_state_abbr")}.png",
+            windDirection = weatherDataObject.getString("wind_direction_compass"),
+            windSpeed = weatherDataObject.getFloat("wind_speed").roundToInt(),
+            minTemp = weatherDataObject.getFloat("min_temp").roundToInt(),
+            maxTemp = weatherDataObject.getFloat("max_temp").roundToInt(),
+            currentTemp = weatherDataObject.getFloat("the_temp").roundToInt(),
+            humidity = weatherDataObject.getFloat("humidity").roundToInt()
+        )
+    }
+}
+
+import com.sd.laborator.interfaces.LocationSearchInterface
+import com.sd.laborator.interfaces.TimeInterface
+import com.sd.laborator.pojo.WeatherForecastData
+import org.json.JSONObject
+import java.net.URL
+import kotlin.math.roundToInt
+
+class WeatherForecastService_Location(timeService: TimeInterface,val dataLoggerService: DataLoggerService) : WeatherForecastService(timeService) {
+    private var locationSearchService: LocationSearchInterface = LocationSearchService()
+    override fun getForecastData(location: Any): WeatherForecastData? {
+        if (location !is String){
+            return if (this.wfsNext != null) this.wfsNext!!.getForecastData(location) else null
+        }
+        val locationId = locationSearchService.getLocationId(location)
+        if (locationId == -1) {
+            return null
+        }
+        val forecastDataURL = URL("https://www.metaweather.com/api/location/$locationId/")
+        val rawResponse: String = forecastDataURL.readText()
+        val responseRootObject = JSONObject(rawResponse)
+        val weatherDataObject = responseRootObject.getJSONArray("consolidated_weather").getJSONObject(0)
+        val weatherForecastData = WeatherForecastData(
+            location = responseRootObject.getString("title"),
+            date = timeService.getCurrentTime(),
+            weatherState = weatherDataObject.getString("weather_state_name"),
+            weatherStateIconURL = "https://www.metaweather.com/static/img/weather/png/${weatherDataObject.getString("weather_state_abbr")}.png",
+            windDirection = weatherDataObject.getString("wind_direction_compass"),
+            windSpeed = weatherDataObject.getFloat("wind_speed").roundToInt(),
+            minTemp = weatherDataObject.getFloat("min_temp").roundToInt(),
+            maxTemp = weatherDataObject.getFloat("max_temp").roundToInt(),
+            currentTemp = weatherDataObject.getFloat("the_temp").roundToInt(),
+            humidity = weatherDataObject.getFloat("humidity").roundToInt()
+        )
+        dataLoggerService.saveData(weatherForecastData.toString())
+        return weatherForecastData
+    }
+
+}
+
+
+
+main
+
+
+import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.boot.runApplication
+
+@SpringBootApplication
+open class WeatherApp
+
+fun main(args: Array<String>) {
+    runApplication<WeatherApp>()
+}
