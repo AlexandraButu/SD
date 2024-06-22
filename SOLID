@@ -1,0 +1,24 @@
+1) Single Responsibility Principle (SRP)
+Principiu: O clasă ar trebui să aibă o singură responsabilitate și să existe un singur motiv pentru care să fie modificată.
+
+În contextul microserviciilor: Fiecare microserviciu ar trebui să aibă o responsabilitate clară și bine definită. De exemplu, un microserviciu pentru gestionarea utilizatorilor nu ar trebui să se ocupe și de gestionarea comenzilor.
+
+2) Open/Closed Principle (OCP)
+Principiu: Entitățile software (clase, module, funcții) ar trebui să fie deschise pentru extensie, dar închise pentru modificare.
+
+În contextul microserviciilor: Microserviciile ar trebui să fie construite într-un mod care să permită adăugarea de noi funcționalități fără a modifica codul existent.
+
+3)  Liskov Substitution Principle (LSP)
+Principiu: Obiectele de un tip derivat trebuie să poată înlocui obiectele de tipul de bază fără a afecta corectitudinea programului.
+
+În contextul microserviciilor: Serviciile care implementează aceleași interfețe ar trebui să fie interschimbabile fără a afecta funcționalitatea sistemului.
+
+4)Interface Segregation Principle (ISP)
+Principiu: Clienții nu ar trebui să fie forțați să depindă de interfețe pe care nu le folosesc.
+
+În contextul microserviciilor: Microserviciile ar trebui să expună interfețe specifice pentru fiecare funcționalitate în loc să aibă o interfață mare și monolitică.
+
+5) Dependency Inversion Principle (DIP)
+Principiu: Modulul de nivel înalt nu ar trebui să depindă de modulele de nivel scăzut. Ambele ar trebui să depindă de abstracții.
+
+În contextul microserviciilor: Microserviciile ar trebui să depindă de abstracții (de exemplu, interfețe) și nu de implementări concrete pentru a permite schimbarea ușoară a implementărilor.
