@@ -1,0 +1,105 @@
+server kotlin
+
+fun main(args: Array<String>) {
+    val socket3rdParty = Socket3rdParty("brmrfu7rh5rcss140ogg")
+    val localSocket = SocketLocal(8888)
+    val data = socket3rdParty.getData()
+    data.forEach {
+        val itemNews = socket3rdParty.getSpecificData(it.get("symbol").toString())
+        if (itemNews.isNotEmpty()) {
+            itemNews.forEach { data ->
+                Thread.sleep(3000)
+                localSocket.sendData(data.toString())
+            }
+        }
+    }
+    localSocket.closeSocket()
+}
+
+import khttp.get
+import org.json.JSONObject
+
+
+class Socket3rdParty(
+    token: String
+){
+    private val apiUrl = "https://finnhub.io/api/v1/"
+    private val pathUrlSymbol = "stock/symbol?exchange=US&token=$token"
+    private val pathUrlNews = "company-news?from=2020-09-04&to=2020-09-05&token=$token"
+
+    fun getData(): List<JSONObject> = get("$apiUrl$pathUrlSymbol")
+        .jsonArray
+        .map {
+            JSONObject(it.toString())
+        }
+
+
+    fun getSpecificData(symbol: String): List<JSONObject> {
+        return try {
+            get("$apiUrl$pathUrlNews&symbol=$symbol")
+                    .jsonArray
+                    .map {
+                        JSONObject(it.toString())
+                    }
+        }
+        catch (e: Throwable){
+            listOf()
+        }
+    }
+}
+
+import java.net.ServerSocket
+
+class SocketLocal(
+    port: Int
+) {
+    private val localSocket = ServerSocket(port)
+    private val pySparkSocket = localSocket.accept()
+
+    fun sendData(data: String){
+        println(data)
+        pySparkSocket.getOutputStream().write("$data\n".encodeToByteArray())
+    }
+
+    fun closeSocket(){
+        pySparkSocket.close()
+        localSocket.close()
+    }
+}
+
+
+flux python
+
+import json
+import os
+
+from pyspark import SparkContext
+from pyspark.streaming.context import StreamingContext
+
+os.environ["PYSPARK_PYTHON"] = "python3"
+os.environ["PYSPARK_DRIVER_PYTHON"] = "python3"
+
+
+def myPrint(obj):
+    for elem in obj:
+        print("URL:" + elem["url"], "\tData: " + str(elem["datetime"]), "\tTitlu: "+elem["headline"])
+
+
+def main():
+    ctx = SparkContext(appName="streaming", master="local[*]")
+    ctx.setLogLevel("WARN")
+
+    spark_context = StreamingContext(ctx, 3)
+    data = spark_context.socketTextStream("localhost", 8888)
+    json_data = data        .map(lambda x: json.loads(x))        .filter(lambda jsonData: len(jsonData["url"]) <= 80)        .filter(lambda jsonData: jsonData["image"][-3:] != "png")
+
+    json_data.foreachRDD(lambda rdd: myPrint(rdd.collect()))
+
+    spark_context.start()
+    spark_context.awaitTermination()
+    spark_context.stop()
+
+
+if __name__ == "__main__":
+    main()
+
