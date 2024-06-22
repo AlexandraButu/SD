@@ -1,0 +1,460 @@
+ActiveManagerMicroservice
+
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.ServerSocket
+import java.net.Socket
+import kotlinx.coroutines.*
+
+class ActiveUsersManagerMicroservice {
+
+    private val users: HashMap<Int, Socket>
+    private val usersServers: HashMap<Int, String>
+    private lateinit var activeUsersManagerServerSocket: ServerSocket
+
+    init {
+        users = hashMapOf()
+        usersServers = hashMapOf()
+    }
+
+    companion object Constants {
+            const val ACTIVE_USERS_MANAGER_PORT = 1500
+    }
+
+    private fun checkIfUsersExists(IP : String, Port : Int) : Boolean {
+        return usersServers.containsKey(Port) && usersServers[Port].equals(IP)
+    }
+
+    public suspend fun run() = coroutineScope {
+        // se porneste un socket server TCP pe portul 1500 care asculta pentru conexiuni
+        activeUsersManagerServerSocket = ServerSocket(ACTIVE_USERS_MANAGER_PORT)
+        println("ActiveUsersManagerMicroservice se executa pe portul: ${activeUsersManagerServerSocket.localPort}")
+        println("Se asteapta conexiuni si mesaje...")
+
+        while (true) {
+            // se asteapta conexiuni din partea clientilor subscriberi
+            val clientConnection = activeUsersManagerServerSocket.accept()
+
+            // se porneste o corutina separat pentru tratarea conexiunii cu clientul
+            launch {
+                println("Subscriber conectat: ${clientConnection.inetAddress.hostAddress}:${clientConnection.port}")
+
+                // adaugarea in lista de subscriberi trebuie sa fie atomica!
+                synchronized(users) {
+                    users[clientConnection.port] = clientConnection
+                }
+
+                val bufferReader = BufferedReader(InputStreamReader(clientConnection.inputStream))
+
+                while (true) {
+                    // se citeste raspunsul de pe socketul TCP
+                    val receivedMessage = bufferReader.readLine()
+
+                    // daca se primeste un mesaj gol (NULL), atunci inseamna ca cealalta parte a socket-ului a fost inchisa
+                    if (receivedMessage == null) {
+                        // deci subscriber-ul respectiv a fost deconectat
+                        println("Subscriber-ul ${clientConnection.port} a fost deconectat.")
+                        synchronized(users) {
+                            users.remove(clientConnection.port)
+                        }
+                        bufferReader.close()
+                        clientConnection.close()
+                        break
+                    }
+
+                    println("Primit mesaj: $receivedMessage")
+                    val (messageType, IP, Port) = receivedMessage.split(" ", limit = 3)
+
+                    when (messageType) {
+                        "VERIFICARE" -> {
+                            if(checkIfUsersExists(IP, Port.toInt()))
+                            {
+                                clientConnection.getOutputStream().write("EXISTA\n".toByteArray())
+                            }
+                            else
+                            {
+                                clientConnection.getOutputStream().write("NU EXISTA\n".toByteArray())
+                            }
+                        }
+                        "INREGISTRARE" -> {
+                            synchronized(usersServers) {
+                                usersServers[Port.toInt()] = IP
+                                println("User $Port inregistrat")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+
+
+public suspend fun main(args: Array<String>) = coroutineScope {
+    val activeUsersManagerMicroservice = ActiveUsersManagerMicroservice()
+    activeUsersManagerMicroservice.run()
+}
+
+
+
+StudentMicroservice
+
+import java.io.BufferedReader
+import java.io.File
+import java.io.InputStreamReader
+import java.net.ServerSocket
+import java.net.Socket
+import kotlin.concurrent.thread
+import kotlin.random.Random
+import kotlin.system.exitProcess
+import kotlinx.coroutines.*
+
+class StudentMicroservice {
+    // intrebarile si raspunsurile sunt mentinute intr-o lista de perechi de forma:
+    // [<INTREBARE 1, RASPUNS 1>, <INTREBARE 2, RASPUNS 2>, ... ]
+    private lateinit var questionDatabase: MutableList<Pair<String, String>>
+    private lateinit var activeUsersManagerSocket: Socket
+    private lateinit var studentServerSocket: ServerSocket
+
+    init {
+        val databaseLines: List<String> = File("questions_database.txt").readLines()
+        questionDatabase = mutableListOf()
+
+        /*
+         "baza de date" cu intrebari si raspunsuri este de forma:
+
+         <INTREBARE_1>\n
+         <RASPUNS_INTREBARE_1>\n
+         <INTREBARE_2>\n
+         <RASPUNS_INTREBARE_2>\n
+         ...
+         */
+        for (i in 0..(databaseLines.size - 1) step 2) {
+            questionDatabase.add(Pair(databaseLines[i], databaseLines[i + 1]))
+        }
+    }
+
+    companion object Constants {
+        // pentru testare, se foloseste localhost. pentru deploy, server-ul socket (microserviciul MessageManager) se identifica dupa un "hostname"
+        // acest hostname poate fi trimis (optional) ca variabila de mediu
+        val ACTIVE_USERS_MANAGER_HOST = System.getenv("ACTIVE_USERS_MANAGER_PORT") ?: "localhost"
+        const val ACTIVE_USERS_MANAGER_PORT = 1500
+        val STUDENT_PORT : Int = Random(java.util.Calendar.getInstance().time.time).nextInt(65536 - 1234) + 1234
+    }
+
+    private fun subscribeToMessageManager() {
+        try {
+            activeUsersManagerSocket = Socket(ACTIVE_USERS_MANAGER_HOST, ACTIVE_USERS_MANAGER_PORT)
+            activeUsersManagerSocket.getOutputStream().write("INREGISTRARE ${studentServerSocket.inetAddress.hostAddress} ${STUDENT_PORT}\n".toByteArray())
+            println("M-am conectat la ACTIVE_USERS_MANAGER!")
+        } catch (e: Exception) {
+            println("Nu ma pot conecta la ACTIVE_USERS_MANAGER!")
+            exitProcess(1)
+        }
+    }
+
+    private fun respondToQuestion(question: String): String? {
+        questionDatabase.forEach {
+            // daca se gaseste raspunsul la intrebare, acesta este returnat apelantului
+            if (it.first == question) {
+                return it.second
+            }
+        }
+        return null
+    }
+
+    public suspend fun run() = coroutineScope {
+        // microserviciul se inscrie in lista de "subscribers" de la MessageManager prin conectarea la acesta
+        studentServerSocket = ServerSocket(STUDENT_PORT)
+        subscribeToMessageManager()
+
+        println("StudentMicroservice se executa pe portul: ${studentServerSocket.localPort}")
+        println("StudentMicroservice este conectat la ActiveUsersManager portul: ${activeUsersManagerSocket.localPort}")
+        println("Se asteapta mesaje...")
+
+        val clientConnection = studentServerSocket.accept()
+        val bufferReader = BufferedReader(InputStreamReader(clientConnection.inputStream))
+
+        while (true) {
+            // se asteapta intrebari trimise prin intermediarul "TeacherMicroservice"
+            val response = bufferReader.readLine()
+
+            if (response == null) {
+                // daca se primeste un mesaj gol (NULL), atunci inseamna ca cealalta parte a socket-ului a fost inchisa
+                println("Microserviciul Teacher (${clientConnection.port}) a fost oprit.")
+                bufferReader.close()
+                clientConnection.close()
+                break
+            }
+
+            // se foloseste o corutina separata pentru tratarea intrebarii primite
+            launch {
+                val (messageType, messageBody) = response.split(" ", limit = 2)
+
+                when(messageType) {
+                    // tipul mesajului cunoscut de acest microserviciu este de forma:
+                    // intrebare <DESTINATIE_RASPUNS> <CONTINUT_INTREBARE>
+                    "INTREBARE" -> {
+                        println("Am primit o intrebare de la profesor: \"${messageBody}\"")
+                        var responseToQuestion = respondToQuestion(messageBody)
+
+                        if (responseToQuestion == null)
+                        {
+                            clientConnection.getOutputStream().write(("Studentul nu stie" + "\n").toByteArray())
+                        }
+                        else
+                        {
+                            responseToQuestion = "RASPUNS $responseToQuestion"
+                            println("Trimit raspunsul: \"${responseToQuestion}\"")
+                            clientConnection.getOutputStream().write((responseToQuestion + "\n").toByteArray())
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+suspend fun main(args: Array<String>) = coroutineScope {
+    val studentMicroservice = StudentMicroservice()
+    studentMicroservice.run()
+}
+
+
+
+
+TeacherMicroservice
+
+
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.*
+import kotlin.concurrent.thread
+import kotlin.system.exitProcess
+import kotlinx.coroutines.*
+
+class TeacherMicroservice {
+    private lateinit var activeUsersManagerSocket: Socket
+    private lateinit var student: Socket
+    private lateinit var teacherMicroserviceServerSocket: ServerSocket
+
+    companion object Constants {
+        // pentru testare, se foloseste localhost. pentru deploy, server-ul socket (microserviciul MessageManager) se identifica dupa un "hostname"
+        // acest hostname poate fi trimis (optional) ca variabila de mediu
+        val ACTIVE_USERS_MANAGER_HOST = System.getenv("ACTIVE_USERS_MANAGER_PORT") ?: "localhost"
+        const val ACTIVE_USERS_MANAGER_PORT = 1500
+        const val TEACHER_PORT = 1600
+        var connected = false
+    }
+
+    private fun subscribeToMessageManager() {
+        try {
+            activeUsersManagerSocket = Socket(ACTIVE_USERS_MANAGER_HOST, ACTIVE_USERS_MANAGER_PORT)
+            println("M-am conectat la ACTIVE_USERS_MANAGER!")
+        } catch (e: Exception) {
+            println("Nu ma pot conecta la ACTIVE_USERS_MANAGER!")
+            exitProcess(1)
+        }
+    }
+
+    public suspend fun run() = coroutineScope {
+        // microserviciul se inscrie in lista de "subscribers" de la MessageManager prin conectarea la acesta
+        subscribeToMessageManager()
+
+        // se porneste un socket server TCP pe portul 1600 care asculta pentru conexiuni
+        teacherMicroserviceServerSocket = ServerSocket(TEACHER_PORT)
+
+        println("TeacherMicroservice se executa pe portul: ${teacherMicroserviceServerSocket.localPort}")
+        println("Se asteapta cereri (intrebari)...")
+
+        while (true) {
+            // se asteapta conexiuni din partea clientilor ce doresc sa puna o intrebare
+            // (in acest caz, din partea aplicatiei client GUI)
+            val clientConnection = teacherMicroserviceServerSocket.accept()
+
+            // se foloseste un thread separat pentru tratarea fiecarei conexiuni client
+            launch {
+                println("S-a primit o cerere de la: ${clientConnection.inetAddress.hostAddress}:${clientConnection.port}")
+
+                // se citeste intrebarea dorita
+                val clientBufferReader = BufferedReader(InputStreamReader(clientConnection.inputStream))
+                val receivedQuestion = clientBufferReader.readLine()
+
+                // Inchide socket-ul studentului la iesire
+                if (receivedQuestion == "EXIT" && connected)
+                {
+                    if(!student.isClosed) {
+                        student.close()
+                        connected = false
+                        clientConnection.getOutputStream().write("M-am deconectat de la student\n".toByteArray())
+                    }
+                    return@launch
+                }
+
+                // Daca e conectat atunci ii trimite mesaje doar studentului
+                if (connected) {
+
+                    if(!receivedQuestion.contains("INTREBARE"))
+                    {
+                        clientConnection.getOutputStream().write("Reformulati intrebarea\n".toByteArray())
+                        print("Reformulati intrebarea")
+                        return@launch
+                    }
+
+
+                    launch {
+                        student.getOutputStream().write((receivedQuestion + "\n").toByteArray())
+                        val bufferReader = BufferedReader(InputStreamReader(student.inputStream))
+                        val receivedMessage = bufferReader.readLine()
+
+                        if (receivedMessage == null) {
+                            println("Student-ul ${student.port} a fost deconectat.")
+                            bufferReader.close()
+                            student.close()
+                            connected = false
+                        }
+
+                        clientConnection.getOutputStream().write("$receivedMessage\n".toByteArray())
+                    }
+                    return@launch
+                }
+
+                // Daca studentul nu e conectat se intra aici si se executa mai departe
+                try {
+                    val (messageType, IP, Port) = receivedQuestion.split(" ", limit = 3)
+                }
+                catch (e : Exception)
+                {
+                    clientConnection.getOutputStream().write("Eroare la spargerea mesajului\n".toByteArray())
+                    return@launch
+                }
+
+                val (messageType, IP, Port) = receivedQuestion.split(" ", limit = 3)
+
+                if(!messageType.equals("VERIFICARE") && !connected)
+                {
+                    clientConnection.getOutputStream().write("Verificati conexiunea cu un student\n".toByteArray())
+                    return@launch
+                }
+
+
+                println("Trimit catre ACTIVE_USERS_MANAGER: ${"$messageType $IP $Port\n"}")
+                activeUsersManagerSocket.getOutputStream().write(("$messageType $IP $Port\n").toByteArray())
+
+                // se asteapta raspuns de la MessageManager
+                val activeUsersManagerBufferReader = BufferedReader(InputStreamReader(activeUsersManagerSocket.inputStream))
+                try {
+                    val receivedResponse = activeUsersManagerBufferReader.readLine()
+
+                    // se trimite raspunsul inapoi clientului apelant
+                    println("Am primit raspunsul: \"$receivedResponse\"")
+
+                    if(receivedResponse.equals("EXISTA"))
+                    {
+                        println("Ma conectez la: $IP:$Port...")
+                        clientConnection.getOutputStream().write("Ma conectez la: $IP:$Port...\n".toByteArray())
+                        student = Socket(IP, Port.toInt())
+                        connected = true
+                    }
+
+                    clientConnection.getOutputStream().write((receivedResponse + "\n").toByteArray())
+                } catch (e: SocketTimeoutException) {
+                    println("Nu a venit niciun raspuns in timp util.")
+                    clientConnection.getOutputStream().write("Nu a raspuns nimeni la intrebare\n".toByteArray())
+                } finally {
+                    // se inchide conexiunea cu clientul
+                    clientConnection.close()
+                }
+            }
+        }
+    }
+}
+
+public suspend fun main(args: Array<String>) = coroutineScope {
+
+    val teacherMicroservice = TeacherMicroservice()
+    teacherMicroservice.run()
+}
+
+
+
+TeacherStudentGUI
+
+from tkinter import *
+from tkinter import ttk
+import threading
+import socket
+
+HOST = "localhost"
+TEACHER_PORT = 1600
+
+
+def resolve_question(question_text):
+    # creare socket TCP
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    # incercare de conectare catre microserviciul Teacher
+    try:
+        sock.connect((HOST, TEACHER_PORT))
+
+        # transmitere intrebare - se deleaga intrebarea catre microserviciu
+        sock.send(bytes(question_text + "\n", "utf-8"))
+
+        # primire raspuns -> microserviciul Teacher foloseste coregrafia de microservicii pentru a trimite raspunsul inapoi
+        response_text = str(sock.recv(1024), "utf-8")
+
+    except ConnectionError:
+        # in cazul unei erori de conexiune, se afiseaza un mesaj
+        response_text = "Eroare de conectare la microserviciul Teacher!"
+
+    # se adauga raspunsul primit in caseta text din interfata grafica
+    response_widget.insert(END, response_text)
+
+
+def ask_question():
+    # preluare text intrebare de pe interfata grafica
+    question_text = question.get()
+
+    # pornire thread separat pentru tratarea intrebarii respective
+    # astfel, nu se blocheaza interfata grafica!
+    threading.Thread(target=resolve_question, args=(question_text,)).start()
+
+
+if __name__ == '__main__':
+    # elementul radacina al interfetei grafice
+    root = Tk()
+    root.title("Interactiune profesor-studenti")
+
+    # la redimensionarea ferestrei, cadrele se extind pentru a prelua spatiul ramas
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+
+    # cadrul care incapsuleaza intregul continut
+    content = ttk.Frame(root)
+
+    # caseta text care afiseaza raspunsurile la intrebari
+    response_widget = Text(content, height=10, width=50)
+
+    # eticheta text din partea dreapta
+    question_label = ttk.Label(content, text="Profesorul intreaba:")
+
+    # caseta de introducere text cu care se preia intrebarea de la utilizator
+    question = ttk.Entry(content, width=50)
+
+    # butoanele din dreapta-jos
+    ask = ttk.Button(content, text="Intreaba", command=ask_question)  # la apasare, se apeleaza functia ask_question
+    exitbtn = ttk.Button(content, text="Iesi", command=root.destroy)  # la apasare, se iese din aplicatie
+
+    # plasarea elementelor in layout-ul de tip grid
+    content.grid(column=0, row=0)
+    response_widget.grid(column=0, row=0, columnspan=3, rowspan=4)
+    question_label.grid(column=3, row=0, columnspan=2)
+    question.grid(column=3, row=1, columnspan=2)
+    ask.grid(column=3, row=3)
+    exitbtn.grid(column=4, row=3)
+
+    # bucla principala a interfetei grafice care asteapta evenimente de la utilizator
+    root.mainloop()
+
