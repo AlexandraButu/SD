@@ -22,3 +22,52 @@ Principiu: Clienții nu ar trebui să fie forțați să depindă de interfețe p
 Principiu: Modulul de nivel înalt nu ar trebui să depindă de modulele de nivel scăzut. Ambele ar trebui să depindă de abstracții.
 
 În contextul microserviciilor: Microserviciile ar trebui să depindă de abstracții (de exemplu, interfețe) și nu de implementări concrete pentru a permite schimbarea ușoară a implementărilor.
+
+
+
+```5.1.1. Principul responsabilitatii unice
+Un microserviciu trebuie să implementeze numai o singură funcţie din fluxul
+sau fluxurile specifice unei afaceri. Prin proiectare, un microserviciu trebuie
+să fie suficient de modular pentru a putea să fie reutilizat în cât mai multe
+situaţii specifice (vezi dezideratele POS).
+Proiectantul va trebui să evite implementarea unui proces logic prea
+complicat cum ar fi, de exemplu, faptul că modificarea sau crearea unei
+comenzi într-un restaurant depinde de existenţa unei comenzi iniţiale.
+5.1.2. Deschis pentru extindere, închis pentru modificare
+Un microserviciu nu trebuie modificat niciodată astfel încât să furnizeze
+rezolvări particulare sau funcționalități marginale. În schimb, el trebuie să fie
+ușor apelabil de către un alt microserviciu.
+Într-un caz mai complex se pot crea servicii de nivel superior pentru
+a adăuga noi funcționalități marginale sau chiar a rezolva unele cazuri
+particulare (in acest caz, crearea se face automat).
+5.1.3. Substitutia Liskov
+O nouă versiune a unui microserviciu trebuie întotdeauna să fie capabilă să o
+înlocuiască pe cea veche fără a produce erori în nici o parte a sistemului care
+îl utilizează.
+De fapt orice schimbare care trebuie aplicată după apariţia noii
+versiuni asupra oricărui apelant al unui serviciu este considerată o situaţie de
+eroare în cazul analizei primare.
+Mai mult, o înlocuire a unui microserviciu nu trebuie să împiedice
+ulterioarele înlocuiri sau îmbunătăţiri ale celorlalte servicii din ecosistemul
+aplicației.
+191
+5.1.4. Separarea interfetelor
+Un microserviciu nu trebuie să expună metode care nu sunt strict necesare
+cum ar fi, de exemplu, facturi sau plăţi. Ca regulă empirică putem spune că,
+în momentul în care din analiza diagramei cazurilor de utilizare se observă că
+nu se utilizează majoritatea metodele acestuia (de exemplu numai 20% din
+ele), atunci în mod sigur nu va fi implementată porțiunea printr-un
+microserviciu, ci este mai degrabă o gândire monolitică.
+Ca rezultat alt acestei reguli înseamnă că dacă întâlnim situaţii ca cea
+anterior menţionată atunci trebuie continuată analiza și separarea
+functionalitatilor pentru respectivul caz până când se ating dezideratele din
+definiţia microserviciilor.
+5.1.5. Controlul invers
+Un microserviciu nu trebuie să apeleze direct un alt microserviciu. În locul
+apelului direct trebuie întotdeauna utilizat un modul pentru descoperirea
+serviciilor pentru a identifica serviciul necesar a fi apelat sau consumat la un
+moment dat sau căruia trebuie să i se delege execuţia instanţei lui pe o
+platformă (de exemplu se va adăuga într-o coadă de mesaje).
+Acum putem trece la discuţia mai “multor abordări specifice
+implementării cu microservicii care sunt sau nu bazate pe utilizarea unor
+cadre pentru dezvoltarea rapidă a aplicaţiilor```
